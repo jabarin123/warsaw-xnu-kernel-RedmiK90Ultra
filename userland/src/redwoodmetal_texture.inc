@@ -113,8 +113,17 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 	if (_iosurface != NULL) {
 		CFRelease(_iosurface);
 	}
+	[_buffer release];  /* after the texture, whose copy-back reads the buffer */
 	[_owner release];   /* AIR resources need the device through destruction. */
 	[super dealloc];
+}
+
+- (void)redwoodSetBuffer:(id)buffer offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow
+{
+	[_buffer release];
+	_buffer = [buffer retain];
+	_bufferOffset = offset;
+	_bufferBytesPerRow = bytesPerRow;
 }
 
 - (struct rwa_texture *)mesaTexture { return _texture; }
@@ -134,9 +143,15 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 - (id)parentTexture                { return nil; }
 - (NSUInteger)parentRelativeLevel  { return 0; }
 - (NSUInteger)parentRelativeSlice  { return 0; }
-- (id)buffer                       { return nil; }
-- (NSUInteger)bufferOffset         { return 0; }
-- (NSUInteger)bufferBytesPerRow    { return 0; }
+/* v93 / upstream 1bd058978: a texture laid over a buffer reports that buffer, and the bytes
+ * the GPU wrote into the texture are copied back into it before the caller's fence returns
+ * (rwa_buffer_textures_writeback in -waitUntilCompleted). Answering nil here is what made
+ * IconRendering.HardwareTexture abort on its weak load; the copy back is what makes the
+ * answer true rather than merely non-nil. A texture with no buffer behind it still says nil,
+ * which is the honest answer for one made from an IOSurface or from bytes. */
+- (id)buffer                       { return _buffer; }
+- (NSUInteger)bufferOffset         { return _bufferOffset; }
+- (NSUInteger)bufferBytesPerRow    { return _bufferBytesPerRow; }
 - (IOSurfaceRef)iosurface          { return (IOSurfaceRef)_iosurface; }
 - (NSUInteger)iosurfacePlane       { return _iosurfacePlane; }
 /* MTLStorageModeShared, except for a multisample texture, which Metal does not allow to be
