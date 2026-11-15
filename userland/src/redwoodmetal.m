@@ -1314,10 +1314,20 @@ struct gem_close { uint32_t handle, pad; };
 	CFTypeRef _iosurface;
 	NSUInteger _iosurfacePlane;
 	int _responsibleProcess;   /* as on the buffer: accounting, not behaviour */
+	/* v93 / upstream 1bd058978: the buffer this texture was laid over, held rather than
+	 * copied from. IconRendering.HardwareTexture takes the MTLBuffer under a texture and
+	 * aborts (brk #1 in swift_unknownObjectWeakLoadStrong) when -buffer answers nil, so
+	 * this is what lets iconservicesagent run its GPU path at all. */
+	id _buffer;
+	NSUInteger _bufferOffset;
+	NSUInteger _bufferBytesPerRow;
 }
 - (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
 	texture:(struct rwa_texture *)texture shape:(const struct rwa_texture_shape *)shape
 	iosurface:(CFTypeRef)surface plane:(NSUInteger)plane;
+/* Not part of MTLTexture: the buffer -newTextureWithDescriptor:offset:bytesPerRow: laid
+ * this texture over. The texture keeps it because the copies back need it. */
+- (void)redwoodSetBuffer:(id)buffer offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow;
 @property (readonly) struct rwa_texture *mesaTexture;
 /* Not part of MTLTexture: the depth or stencil aspect of this texture, one float and one
  * byte per texel. Metal's own -getBytes: has no aspect to name and the compiler library
@@ -3109,9 +3119,14 @@ checkenv_or_name(void)
 		rw_print("%s\n", why);
 		return nil;
 	}
-	return [[RedwoodMetalTexture alloc] initWithRedwoodDevice:_owner
+	/* v93 / upstream 1bd058978: the texture keeps the buffer, so -buffer can answer it and
+	 * the copy back in -waitUntilCompleted has somewhere to go. Everything else about the
+	 * path (copy in at creation and before each batch of work) was already here. */
+	RedwoodMetalTexture *made = [[RedwoodMetalTexture alloc] initWithRedwoodDevice:_owner
 							 texture:texture
 							   shape:&shape iosurface:NULL plane:0];
+	[made redwoodSetBuffer:self offset:offset bytesPerRow:bytesPerRow];
+	return made;
 }
 
 - (id)newLinearTextureWithDescriptor:(id)descriptor offset:(NSUInteger)offset
