@@ -48,11 +48,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fetch userland sources
         run: |
-          git clone --depth 1 --branch k90-port https://github.com/iola1999/hackios-xnu-userland.git /tmp/u
+          # Pinned, not tip. k90-port's tip (4833b94 at the time of writing) has drifted
+          # away from the flat userland/src layout this job expects: the directory is not
+          # there at all, so the overlay and the compile below had nothing to work on.
+          # 732d49d is the last commit that still carries it. Same technique as
+          # build-mesa-air.yml: name a commit, never a moving branch.
+          git clone --filter=blob:none --no-checkout https://github.com/iola1999/hackios-xnu-userland.git /tmp/u
+          git -C /tmp/u checkout -q 732d49d41365c9f3081d05784229a42f42042ca1
           # The upstream tree splits src/ into apps/gfx/inject/services/boot/...; the sources
           # this workflow compiles live in this repository as userland/src (flat), so they are
           # laid over the clone and win. Without this the compile step looks for
-          # src/input26_service.c, which upstream has at src/services/.
+          # src/input26_service.c, which upstream has at src/services/. mkdir -p because a
+          # clone that does not carry the directory turns the overlay into a hard error.
+          mkdir -p /tmp/u/userland/src
           cp -R userland/src/. /tmp/u/userland/src/
           ls /tmp/u/userland/src | head -40
       - name: Compile the arm64e programs

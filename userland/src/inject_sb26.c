@@ -788,6 +788,15 @@ static struct { char key[72]; xpc_object_t reply; } sb26_xpc_cache[SB26_XPC_CACH
 static unsigned sb26_xpc_cache_n;
 static unsigned sb26_xpc_cache_last;
 
+/* v96: how long a COLD iconservices key may hold the calling thread. 300 ms was v70's
+ * compromise after a 4 s cap killed SpringBoard; the taps that pay it are the ones
+ * that stutter, and a live agent answers in tens of milliseconds, so the default drops
+ * to 80 ms and glass.conf can retune it without a rebuild.
+ * The reply is still never NULL: a timeout replays the cached reply (wrong icon beats
+ * a dead SpringBoard), exactly as before. Declared here, above sb26_hook_xpc_sync,
+ * because that is where it is read; sb26_glass_conf() fills it in later. */
+static double glass_xpc_cold_ms = 80.0;
+
 /* Key: length + first 64 bytes of the request's "root" data — icon requests for the
  * same icon repeat byte-for-byte (the "sequence" number lives outside the blob). */
 static void
@@ -1008,8 +1017,12 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
                 }
                 dispatch_semaphore_signal(done);
             });
-        if (dispatch_semaphore_wait(done,
-                dispatch_time(DISPATCH_TIME_NOW, 300LL * NSEC_PER_MSEC)) == 0) {
+        {
+            double cold_ms = glass_xpc_cold_ms;
+            if (cold_ms < 20.0) cold_ms = 20.0;
+            if (cold_ms > 300.0) cold_ms = 300.0;
+        if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)(cold_ms * (double)NSEC_PER_MSEC))) == 0) {
             reply = async_reply;
             if (reply) {
                 sb26_xpc_cache_put(key, reply);
@@ -1030,8 +1043,9 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
             reply = sb26_xpc_cache_get(key);
             if (!reply) reply = sb26_xpc_cache_any();
             reply = reply ? xpc_retain(reply) : xpc_dictionary_create(NULL, NULL, 0);
-            fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d\n",
-                n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY);
+            fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d cold_ms=%.0f\n",
+                n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY, cold_ms);
+        }
         }
         if (done) dispatch_release(done);
 done_icons:
@@ -1240,12 +1254,22 @@ sb26_glass_conf(void)
         else if (!strcmp(key, "search")) glass_search = value;
         else if (!strcmp(key, "widget")) glass_widget = value;
         else if (!strcmp(key, "on")) glass_on = (int)value;
+        else if (!strcmp(key, "xpc_cold_ms")) glass_xpc_cold_ms = value;
     }
     fclose(f);
-    fprintf(stderr,
-        "sb26 glass: conf on=%d icon=%.2f/%.2f dock=%.2f search=%.2f widget=%.2f\n",
-        glass_on, glass_icon_color, glass_icon_white, glass_dock, glass_search,
-        glass_widget);
+    /* cold= is the one number that decides this round: it proves the conf was read and
+     * says which wait every cold iconservices key will pay. The clamp is applied at the
+     * wait site, so print both so an out-of-range xpc_cold_ms is visible here too. */
+    {
+        double shown = glass_xpc_cold_ms;
+        if (shown < 20.0) shown = 20.0;
+        if (shown > 300.0) shown = 300.0;
+        fprintf(stderr,
+            "sb26 glass: conf on=%d icon=%.2f/%.2f dock=%.2f search=%.2f widget=%.2f "
+            "cold_conf=%.0f cold_ms=%.0f\n",
+            glass_on, glass_icon_color, glass_icon_white, glass_dock, glass_search,
+            glass_widget, glass_xpc_cold_ms, shown);
+    }
 }
 
 struct sb26_glass_entry { char key[192]; id image; };

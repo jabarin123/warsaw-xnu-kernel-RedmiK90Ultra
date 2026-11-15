@@ -1,0 +1,94 @@
+name: build sb26 dylib
+
+# libredwood-sb26.dylib, arm64e, compiled from THIS repository's own
+# userland/src -- the four translation units that make the SpringBoard library:
+#
+#   src/inject_sb26.c          + inject_sb26_airdrop.inc + inject_sb26_uninstall.inc
+#   src/inject_sb26_layers.c
+#   src/inject_sb26_rate.c
+#   src/inject_posterboard.c
+#
+# Nothing here comes from the upstream userland fork. That fork's k90-port tip
+# no longer carries userland/src at all, which is why build-host-tools.yml's
+# `cp -R userland/src/. /tmp/u/userland/src/` job stopped producing anything;
+# this workflow compiles the library straight out of the checkout, so upstream
+# drift cannot break it. Its output is one file, and the Windows build host
+# takes it from there:
+#
+#   obj/libredwood-sb26.dylib -> tree/userland/obj/libredwood-sb26.dylib
+#   build.sh (PREBUILT=1, V=26) copies it to root/lib and packs root26.apfs,
+#   which mkpayload-vNN.py drops into payload-vNN.bin.
+#
+# Flags are build.sh's own line for the iOS 26 library (V=26, Darwin branch),
+# unchanged: same -Os, same frameworks, same -install_name. -Werror is left out
+# on purpose so a warning reports instead of hiding the artifact; the log is
+# meant to be read.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-sb26-v96.yml'
+      - 'userland/src/inject_sb26.c'
+      - 'userland/src/inject_sb26_airdrop.inc'
+      - 'userland/src/inject_sb26_uninstall.inc'
+      - 'userland/src/inject_sb26_layers.c'
+      - 'userland/src/inject_sb26_rate.c'
+      - 'userland/src/inject_posterboard.c'
+
+permissions:
+  contents: write
+
+jobs:
+  dylib:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Select Xcode
+        run: |
+          ls -d /Applications/Xcode_*.app || true
+          sudo xcode-select -s /Applications/Xcode_26.3.app 2>/dev/null || \
+          sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - uses: actions/checkout@v4
+      - name: Compile libredwood-sb26.dylib
+        run: |
+          set -eux
+          mkdir -p obj
+          CC="/usr/bin/xcrun -sdk iphoneos clang -arch arm64e -miphoneos-version-min=26.0"
+          $CC -dynamiclib -install_name /redwood/lib/libredwood-sb26.dylib \
+              -Os -Wall -Wextra \
+              -framework CoreFoundation -framework CoreGraphics -framework Metal \
+              -lobjc -lMobileGestalt \
+              userland/src/inject_sb26.c userland/src/inject_sb26_layers.c \
+              userland/src/inject_sb26_rate.c userland/src/inject_posterboard.c \
+              -o obj/libredwood-sb26.dylib
+          /usr/bin/codesign --force --sign - obj/libredwood-sb26.dylib
+          ls -l obj/libredwood-sb26.dylib
+          # arm64e shows up as cpusubtype 2; an arm64 slice here would be refused
+          # by dyld inside SpringBoard.
+          otool -hv obj/libredwood-sb26.dylib | tail -2
+          /usr/bin/codesign -dv obj/libredwood-sb26.dylib 2>&1 | head -6 || true
+          shasum -a 256 obj/libredwood-sb26.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libredwood-sb26-v96
+          path: obj/libredwood-sb26.dylib
+          if-no-files-found: error
+      - name: Leave it on a branch a Windows host can fetch
+        # Same reason as build-host-tools.yml: codeload needs no token, so a
+        # tarball of this orphan branch brings the library home even when the
+        # artifact API is awkward from the build host.
+        run: |
+          set -eu
+          cd obj
+          shasum -a 256 libredwood-sb26.dylib > SHA256SUMS
+          git init -q
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git checkout -q -b sb26-artifacts
+          git add -A
+          git commit -qm "libredwood-sb26.dylib: ${{ github.sha }}"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q -f origin sb26-artifacts
+          echo "sb26-artifacts: $(git rev-parse --short HEAD)"
