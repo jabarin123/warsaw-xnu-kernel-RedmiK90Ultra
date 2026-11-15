@@ -162,7 +162,12 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
           xcodebuild -version
       - name: Fetch userland sources
-        run: git clone --depth 1 --branch k90-port https://github.com/iola1999/hackios-xnu-userland.git /tmp/ul
+        # Pinned for the same reason as the job above: the k90-port tip has moved on and no
+        # longer carries prebuilt/userland/ or src/build_installer.sh, so this job died at
+        # `cp /tmp/ul/prebuilt/userland/*: No such file or directory`. 732d49d still has both.
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/iola1999/hackios-xnu-userland.git /tmp/ul
+          git -C /tmp/ul checkout -q 732d49d41365c9f3081d05784229a42f42042ca1
       - name: Ad-hoc sign the prebuilt programs and build RedwoodInstaller.app
         run: |
           set -e

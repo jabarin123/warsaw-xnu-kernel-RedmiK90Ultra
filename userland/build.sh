@@ -825,6 +825,12 @@ PY
 		printf 'dock = %s\n' "${GLASS_DOCK:-1.0}"
 		printf 'search = %s\n' "${GLASS_SEARCH:-1.0}"
 		printf 'widget = %s\n' "${GLASS_WIDGET:-1.0}"
+		# v96: how long one COLD iconservices key may hold the calling thread, in
+		# milliseconds (clamped to 20..300 by the library). This is the knob the
+		# stutter rides on: 300 ms was v70's compromise, 80 is v96's default, and a
+		# retune costs a root26.apfs rebuild, not a recompile of the dylib.
+		printf '# xpc_cold_ms: cold iconservices wait in ms, 20..300\n'
+		printf 'xpc_cold_ms = %s\n' "${GLASS_XPC_COLD_MS:-80}"
 	} > root/etc/glass.conf
 	# Metal's discovery is a whole rc of its own (RC=rc.metal), not a file this script tests:
 	# init runs root/etc/rc a line at a time, each line a command, so a shell `if` in it is a
