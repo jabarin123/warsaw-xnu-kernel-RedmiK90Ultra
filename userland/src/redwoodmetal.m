@@ -1399,19 +1399,27 @@ struct gem_close { uint32_t handle, pad; };
 
 /* v77: the one process this driver stands down for, and why, is written at
  * -initWithAcceleratorPort: below. */
+/* v77 stood this process down on the CPU; v94 hands it back to the GPU.
+ *
+ * The reason v77 gave was a cleared weak reference inside IconRendering.HardwareTexture,
+ * and v87 read that as "not our MTLDevice" because making textures retain their device did
+ * not help. Upstream's own root cause for the same crash says otherwise: IconRendering takes
+ * a weak reference to the MTLBuffer under the texture and traps when -buffer answers nil --
+ * which it did, unconditionally, in this driver. v93 answers the real buffer and copies it
+ * back before the fence is paid, so the reference has something to load. REDWOOD_AGENT_CPU=1
+ * keeps the old behaviour for a round that has to be safe. */
 static int
 checkenv_or_name(void)
 {
 	const char *name = getprogname();
 
-	if (name == NULL || strcmp(name, "iconservicesagent") != 0)
-		return 0;
-	rw_print("v77/v88: this process draws on the CPU; IconRendering's HardwareTexture "
-	         "asserts on a cleared weak reference. v87 retried the GPU path after v85 "
-	         "made textures retain their device, and it STILL died with SIGNAL 5 at "
-	         "IconRendering+0x55180 (TextureIO -> CoreUI -> IconServices). The weak "
-	         "reference is not our MTLDevice. REDWOOD_AGENT_GPU=1 tries the GPU again.\n");
-	return 1;
+	if (getenv("REDWOOD_AGENT_CPU") != NULL)
+		return 1;
+	if (name != NULL && strcmp(name, "iconservicesagent") == 0)
+		rw_print("v94: iconservicesagent draws on the GPU; -buffer answers the real buffer "
+		         "and rwa_buffer_textures_writeback copies it back (v93). REDWOOD_AGENT_CPU=1 "
+		         "puts this process back on the CPU path v77 chose.\n");
+	return 0;
 }
 
 + (void)load
