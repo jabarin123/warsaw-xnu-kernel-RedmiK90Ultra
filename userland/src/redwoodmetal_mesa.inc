@@ -1,4 +1,35 @@
-#include "../../tools/mesa/air/air_metal_copy.h"
+/* The compiler library's copy entry points, declared here instead of including
+ * tools/mesa/air/air_metal_copy.h.
+ *
+ * That header is not ours: the CI clones upstream's userland tree and lays this repository's
+ * src/ over it, so the header that arrives is whatever upstream ships that day. On
+ * 2026-11-15 upstream moved the stitch structures (struct rwa_stitch_node, struct
+ * rwa_linked_function) into it, and this driver defines its own -- the stitch path is
+ * carried in redwoodmetal.m because the AIR contract it implements is read there. Including
+ * both is a redefinition, and the same header does not declare
+ * rwa_buffer_textures_writeback at all. What this file needs is signatures, not structures,
+ * so they are written out; the compiler library exports exactly these. */
+#include <stddef.h>
+
+struct rwa_device;
+struct rwa_buffer;
+struct rwa_texture;
+struct rwa_texture_shape;
+
+int rwa_buffer_copy(struct rwa_buffer *src, size_t src_offset,
+		    struct rwa_buffer *dst, size_t dst_offset, size_t size,
+		    char *why, size_t why_size);
+int rwa_texture_copy(struct rwa_texture *src, unsigned src_level, unsigned src_slice,
+		     const unsigned src_origin[3], struct rwa_texture *dst,
+		     unsigned dst_level, unsigned dst_slice, const unsigned dst_origin[3],
+		     const unsigned size[3], char *why, size_t why_size);
+int rwa_texture_generate_mipmaps(struct rwa_texture *texture, char *why, size_t why_size);
+struct rwa_texture *rwa_texture_from_buffer(struct rwa_device *device,
+					    const struct rwa_texture_shape *shape,
+					    struct rwa_buffer *source, size_t offset,
+					    unsigned row_bytes, char *why, size_t why_size);
+void rwa_buffer_textures_refresh(struct rwa_device *device);
+void rwa_buffer_textures_writeback(struct rwa_device *device);
 
 static struct {
 	void *handle;
