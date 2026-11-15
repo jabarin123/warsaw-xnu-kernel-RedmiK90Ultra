@@ -7,6 +7,10 @@ static struct {
 	__typeof__(&rwa_texture_generate_mipmaps) texture_generate_mipmaps;
 	__typeof__(&rwa_texture_from_buffer) texture_from_buffer;
 	__typeof__(&rwa_buffer_textures_refresh) buffer_textures_refresh;
+	/* v93: the copy back, which runs when a caller pays for the work. The compiler library
+	 * has exported it since the buffer-texture path was written; only the driver never
+	 * asked for it. */
+	__typeof__(&rwa_buffer_textures_writeback) buffer_textures_writeback;
 	struct rwa_device *(*device_open)(char *, size_t);
 	void (*device_close)(struct rwa_device *);
 	const char *(*device_name)(struct rwa_device *);
@@ -96,6 +100,7 @@ mesa_available(void)
 	*(void **)&mesa.texture_generate_mipmaps = dlsym(mesa.handle, "rwa_texture_generate_mipmaps");
 	*(void **)&mesa.texture_from_buffer = dlsym(mesa.handle, "rwa_texture_from_buffer");
 	*(void **)&mesa.buffer_textures_refresh = dlsym(mesa.handle, "rwa_buffer_textures_refresh");
+	*(void **)&mesa.buffer_textures_writeback = dlsym(mesa.handle, "rwa_buffer_textures_writeback");
 	*(void **)&mesa.device_open = dlsym(mesa.handle, "rwa_device_open");
 	*(void **)&mesa.device_close = dlsym(mesa.handle, "rwa_device_close");
 	*(void **)&mesa.device_name = dlsym(mesa.handle, "rwa_device_name");
