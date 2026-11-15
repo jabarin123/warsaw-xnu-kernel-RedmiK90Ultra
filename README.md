@@ -12,33 +12,37 @@ XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB
 > [@wannqn](https://t.me/wannqn) / [@hxfuxyyXD](https://t.me/hxfuxyyXD)，动态见 [t.me/oosexgangdevs](https://t.me/oosexgangdevs)。
 > 本仓库是同机型开发者的本地工作分支，没有上游授权，不是上游官方仓库。
 
-## 当前进展（v92，2026-11-09）
+## 当前进展（v93，2026-11-15）
 
 **iOS 26 主屏桌面可交互，图标样式已定稿。** launchd 全部 boot task 通过、原生
 1280×2772 1:1 渲染、23 个图标全部可见、文件夹可打开、点 App 能启动，
-设置 / 控制中心 / WiFi / Home 上滑手势均正常。当前真机跑的是 `payload-v92.bin`。
+设置 / 控制中心 / WiFi / Home 上滑手势均正常。当前真机跑的是 `payload-v93.bin`。
 
 | 载荷 | 状态 |
 |---|---|
 | `payload-v86.bin` | ✅ **已完整验证的基线**（主屏逐像素基线 `once-v86b`，18:23 复跑一致 0.29%） |
 | `payload-v89.bin` | ⚠️ A+C 试验：逐像素 alpha 被忽略、Dock group opacity 整层消失 |
 | `payload-v91.bin` | ❌ layer opacity 试验：除时钟外图标全消失，勿用 |
-| `payload-v92.bin` | ✅ v86 + 图标 squircle 圆角（C 开关全关），与 v86 主屏仅 1.55% 像素差异，**当前在用** |
+| `payload-v92.bin` | ✅ v86 + 图标 squircle 圆角（C 开关全关），与 v86 主屏仅 1.55% 像素差异 |
+| `payload-v93.bin` | ✅ **当前在用**：v92 + 纹理 `MTLBuffer` 修复（`-buffer` 返回真实值 + 写回），真机桌面正常、`rwm CRASH` 0 |
+| `payload-v94.bin` | ❌ 实验：`iconservicesagent` 强制 GPU 图标路径。能跑但渲染不完整（缺层、Dock 白底丢失）并崩 2 次，留作证据勿用 |
 
 v92 的圆角裁剪顺带去掉了 v86 图标上那条固定的白色弧形高光和四边浅色镶边，
-「图标边缘贴纸感」明显减轻，维护者对图标样式满意。该轮有 1 次
-`rwm CRASH: SpringBoard 32: SIGNAL 5`（自动重拉后桌面与后续日志正常，v86 为 0 次），
-**建议再跑一轮确认是否偶发，再决定是否把 v92 定成新基线**。
+「图标边缘贴纸感」明显减轻，维护者对图标样式满意。v93 把纹理底下的 `MTLBuffer`
+补回来（上游 `iconservicesagent` 的 `IconRendering.HardwareTexture` 会对它取弱引用，
+nil 时 `brk #1`），两轮真机验证桌面正常、`rwm CRASH` 0 次，是新的可用基线。
 
-**今天新增的未解问题**：点开任意图标会闪一下红色，随后启动动画掉帧卡顿。
-实时日志取证：tap 后帧空窗 50–109 ms、稳定帧间隔约 50 ms（≈20 fps）、
-`com.apple.iconservices` 同步调用 30 次撞 300 ms 冷超时。
-红色是毫秒级渲染瞬态，`oem screenshot` 单次 0.43 s 抓不到；
-帧缓冲物理地址 `0xfc800000`，下一步可用 `oem stage <ADDR> <HEXLEN>` 只读一行做高频采样。
-连拍工具已放 `docs/tools/tap-burst.py`。
+**仍未解决的三件事**：① 点开任意图标会闪一下红色、随后启动动画掉帧卡顿；
+② 图标 / Dock / 搜索 / widget 的半透明玻璃（A+C）——PNG 路径做不到，必须走
+`iconservicesagent` 的 GPU 原生渲染；③ widget 白底块（`0016` 尚未编进 AIR）。
+
+> **换人接手请直接看 [docs/HANDOVER-DSH-2026-11-15.md](docs/HANDOVER-DSH-2026-11-15.md)**：
+> 硬边界、本机路径、启动链与参数、版本谱、源码改动地图、复现命令、12 条坑、按性价比排好的下一步。
 
 完整进度、v83–v92 每轮结论、透明玻璃为何没做成、遗留项与下一步，
-见 **[docs/STATUS-2026-11-09.md](docs/STATUS-2026-11-09.md)**。
+见 **[docs/STATUS-2026-11-09.md](docs/STATUS-2026-11-09.md)**；
+上游 11-09 → 11-15 的六个改动与我们逐条对照见
+**[docs/UPSTREAM-2026-11-15.md](docs/UPSTREAM-2026-11-15.md)**。
 
 ## 启动参数（v37，真机实测可进入锁屏）
 
