@@ -996,6 +996,14 @@ done:
 		return;
 	}
 	__atomic_store_n(&fence_wait, 0, __ATOMIC_RELEASE);
+	/* v93 / upstream 1bd058978: a texture laid over a buffer gets the bytes the GPU wrote
+	 * back into that buffer before the fence counts as paid, because the caller reads the
+	 * buffer the moment this returns -- IconRendering does exactly that to serialize an
+	 * icon. Without it -buffer would answer a buffer whose contents are the ones copied in
+	 * at creation, which is a different lie from nil and harder to see. */
+	if (mesa.buffer_textures_writeback != NULL) {
+		mesa.buffer_textures_writeback([[_queue device] mesaDevice]);
+	}
 	_status = RW_CB_COMPLETED;   /* the fence has been paid, and only now */
 }
 
