@@ -33,6 +33,7 @@ on:
   push:
     paths:
       - '.github/workflows/build-mesa-air.yml'
+      - 'patches/mesa/**'
 
 env:
   MESA_VERSION: '26.2.5'
@@ -51,6 +52,12 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
           xcodebuild -version
           echo "iphoneos SDK $(xcrun --sdk iphoneos --show-sdk-version) at $(xcrun --sdk iphoneos --show-sdk-path)"
+
+      - uses: actions/checkout@v4
+        with:
+          # The one file this workflow substitutes: patches/mesa/0016. Nothing else
+          # in the repository is read here (Mesa comes from its own tarball).
+          sparse-checkout: patches
 
       - name: Install the build host
         # bison must be the homebrew one: Mesa's frontend parser needs 3.x and
@@ -72,15 +79,25 @@ jobs:
           PATH="$BISON_DIR:$FLEX_DIR:$GPATCH_DIR:$PATH" gpatch --version | head -1
 
       - name: Fetch the sources and the patch set
+        # Pinned to the commit the library now on the device was built from
+        # (k90-port's head when run 42446862384 started, 2026-11-08 03:23Z).
+        # Upstream has since renamed tools/mesa/redwood-drm to annibale-drm and
+        # the target to libannibaleair; the userland this library is loaded by
+        # dlopens /redwood/lib/libredwoodair.dylib in ten places, so following
+        # the branch would break it. Pinned, this build equals that library plus
+        # 0016 and nothing else.
+        env:
+          USERLAND_SHA: 2d677008aeb08fe1cd8e69de98a93f787fe3317f
         run: |
           set -euo pipefail
-          # Pinned, not tip (same rule as build-host-tools.yml): the AIR patch set is a
-          # moving target otherwise, and a re-run of an old commit would silently build
-          # a different library. 4833b94 is the tip this workflow's 2026-11-15 build
-          # actually used, audited: 0015 still SKIPPED by name below, rebase-26 intact.
-          git clone --filter=blob:none --no-checkout \
-            https://github.com/iola1999/hackios-xnu-userland.git /tmp/u
-          git -C /tmp/u checkout -q 4833b94a38
+          git init -q /tmp/u
+          git -C /tmp/u remote add origin \
+            https://github.com/iola1999/hackios-xnu-userland.git
+          git -C /tmp/u fetch -q --depth 1 origin "$USERLAND_SHA"
+          git -C /tmp/u checkout -q FETCH_HEAD
+          echo "--- upstream $(git -C /tmp/u rev-parse HEAD) ---"
+          test -d /tmp/u/tools/mesa/redwood-drm || {
+            echo "::error::redwood-drm is not in $USERLAND_SHA"; exit 1; }
           echo "--- 25.0.7 patch set: $(ls /tmp/u/tools/mesa/*.patch | wc -l) files ---"
           echo "--- rebase-26 layer: $(ls /tmp/u/tools/mesa/rebase-26/*.patch | wc -l) files ---"
           ls /tmp/u/tools/mesa/rebase-26/
@@ -104,6 +121,21 @@ jobs:
             "https://mesa.freedesktop.org/archive/mesa-$MESA_VERSION.tar.xz"
           echo "$MESA_SHA256  mesa-$MESA_VERSION.tar.xz" | shasum -a 256 -c -
           tar xJf "mesa-$MESA_VERSION.tar.xz"
+
+          # 0016 at the pinned commit declares a nine-line body for eight lines,
+          # so gpatch refuses the file and the library ships without it -- that is
+          # what the patch.log of the library on the device says. The copy
+          # committed in this repository is upstream's corrected one (same bytes
+          # as hackios-xnu-userland 438e0ca, LF). Assert header and line endings
+          # before use, so neither a checkout nor an upstream change hides here.
+          SRC="$GITHUB_WORKSPACE/patches/mesa/0016-nir-lower-fb-read-zero-layer.patch"
+          DST=/tmp/u/tools/mesa/rebase-26/0016-nir-lower-fb-read-zero-layer.patch
+          cp "$SRC" "$DST"
+          grep -q '^@@ -57,7 +57,8 @@' "$DST" || {
+            echo "::error::0016 hunk header is not the corrected one"; exit 1; }
+          ! grep -q $'\r' "$DST" || {
+            echo "::error::0016 has CRLF; gpatch would refuse it"; exit 1; }
+          echo "--- 0016: $(grep '^@@' "$DST") ---"
 
           PATCHLOG=/tmp/mesa/out/patch.log
           : > "$PATCHLOG"
