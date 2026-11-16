@@ -1702,7 +1702,10 @@ checkenv_or_name(void)
 	for (unsigned i = 0; i < 8; i++) {
 		MTLRenderPipelineColorAttachmentDescriptor *attachment =
 		    [[descriptor colorAttachments] objectAtIndexedSubscript:i];
-		unsigned format = attachment != nil ? (unsigned)[attachment pixelFormat] : 0;
+		/* v97 (upstream ab4123be): the ten-bit formats report their Metal number but
+		 * are BGRA surfaces underneath; the shape key must say what the surface is. */
+		unsigned format = attachment != nil
+		    ? rwd_canonical_pixel_format((unsigned)[attachment pixelFormat]) : 0;
 
 		shape.color_format[i] = format;
 		if (format != 0) {
@@ -2081,7 +2084,8 @@ checkenv_or_name(void)
 		return nil;
 	}
 	struct rwa_texture_shape shape = {
-		.pixel_format = (unsigned)[descriptor pixelFormat],
+		/* v97 (upstream ab4123be): see rwd_canonical_pixel_format in redwood_drawable.h. */
+		.pixel_format = rwd_canonical_pixel_format((unsigned)[descriptor pixelFormat]),
 		.type = (unsigned)[descriptor textureType],
 		.width = (unsigned)[descriptor width],
 		.height = (unsigned)[descriptor height],
@@ -2720,7 +2724,8 @@ checkenv_or_name(void)
 		return nil;
 	}
 	memset(&shape, 0, sizeof(shape));
-	shape.pixel_format = (unsigned)[d pixelFormat];
+	/* v97 (upstream ab4123be): see rwd_canonical_pixel_format in redwood_drawable.h. */
+	shape.pixel_format = rwd_canonical_pixel_format((unsigned)[d pixelFormat]);
 	shape.type = (unsigned)[d textureType];
 	shape.width = (unsigned)[d width];
 	shape.height = (unsigned)[d height];
@@ -3112,7 +3117,8 @@ checkenv_or_name(void)
 		return nil;
 	}
 	memset(&shape, 0, sizeof(shape));
-	shape.pixel_format = (unsigned)[descriptor pixelFormat];
+	/* v97 (upstream ab4123be): see rwd_canonical_pixel_format in redwood_drawable.h. */
+	shape.pixel_format = rwd_canonical_pixel_format((unsigned)[descriptor pixelFormat]);
 	shape.type = (unsigned)[descriptor textureType];
 	shape.width = (unsigned)[descriptor width];
 	shape.height = (unsigned)[descriptor height];

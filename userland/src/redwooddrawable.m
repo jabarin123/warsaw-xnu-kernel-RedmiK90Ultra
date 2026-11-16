@@ -671,8 +671,15 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 		    "import plane 0 only", plane);
 		return NULL;
 	}
-	if (!is_ycbcr_biplanar && (surface.width != want->width || surface.height != want->height)) {
-		rwd_say(why, why_size, "surface %u is %ux%u and the descriptor asks for %ux%u",
+	/* v97 (upstream ab4123be): a surface bigger than the descriptor is accepted. The
+	 * descriptor was built from the layer's drawableSize, the surface from
+	 * CoreAnimation's own idea of it, and for widget hosts those disagree in the
+	 * "surface is one tile larger" direction; demanding equality rejected the import
+	 * and the widget rendered empty. Smaller is still refused: reading it would run
+	 * past the surface's memory. The shape below is the surface's, so the extra rows
+	 * are simply never sampled. */
+	if (!is_ycbcr_biplanar && (surface.width < want->width || surface.height < want->height)) {
+		rwd_say(why, why_size, "surface %u is %ux%u, smaller than the %ux%u the descriptor asks for",
 		    id, surface.width, surface.height, want->width, want->height);
 		return NULL;
 	}

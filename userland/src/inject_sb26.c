@@ -180,6 +180,28 @@ lock_screen_manager(void)
 
 /* 1: locked, an unlock was asked for; 0: not locked; -1: no lock screen manager to ask. */
 
+/* v97 (upstream e052bd49): wake the panel before asking for the unlock. The lock screen
+ * turns the display off on its own timer (30 s), and an unlock that lands inside that
+ * window is accepted but leaves the panel dark until something else touches the
+ * backlight -- the "unlocked, still black" boot. -[SBBacklightController
+ * turnOnScreenFullyWithBacklightSource:1] is what the lock screen itself calls when a
+ * finger arrives, so it is the right entry point for a synthetic unlock. */
+static void
+wake_screen_for_unlock(void)
+{
+    Class bl_cls = objc_getClass("SBBacklightController");
+    if (!bl_cls) return;
+    SEL shared = sel_registerName("sharedInstanceIfExists");
+    if (!class_getClassMethod(bl_cls, shared))
+        shared = sel_registerName("sharedInstance");
+    if (!class_getClassMethod(bl_cls, shared)) return;
+    id bl = ((id (*)(Class, SEL))objc_msgSend)(bl_cls, shared);
+    if (!bl) return;
+    SEL turn_on = sel_registerName("turnOnScreenFullyWithBacklightSource:");
+    if (class_getInstanceMethod(bl_cls, turn_on))
+        ((void (*)(id, SEL, long))objc_msgSend)(bl, turn_on, 1);
+}
+
 static int
 unlock_once(const char *why)
 {
@@ -196,6 +218,7 @@ unlock_once(const char *why)
         notify_post("com.redwood.wallpaper.suspend");
         return 0;
     }
+    wake_screen_for_unlock();
     BOOL answer = ((BOOL (*)(id, SEL, long, id))objc_msgSend)(manager, unlock_ui, UNLOCK_SOURCE_COVER_SHEET, nil);
     int locked_after = ((BOOL (*)(id, SEL))objc_msgSend)(manager, locked);
     fprintf(stderr, "sb26: unlock %s: answer=%d locked_after=%d\n", why, answer, locked_after);
@@ -265,6 +288,18 @@ install_unlock(void)
         if (unlock_once("notification") == 0) {
             fprintf(stderr, "sb26: unlock notification: not locked\n");
             notify_post("com.redwood.wallpaper.suspend");
+            return;
+        }
+        /* v97 (upstream e052bd49): the first ask can land before the lock screen is
+         * ready (isUILocked was false a moment ago, or the panel was asleep), and then
+         * it answers without unlocking. One retry 300 ms later covers that window
+         * without turning into a poll. */
+        id manager = lock_screen_manager();
+        if (manager && ((BOOL (*)(id, SEL))objc_msgSend)(manager, sel_registerName("isUILocked"))) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * (int64_t)NSEC_PER_MSEC),
+                dispatch_get_main_queue(), ^{
+                unlock_once("notification-retry");
+            });
         }
     });
 
@@ -597,6 +632,42 @@ sb26_hook_CFBundleCopyBundleLocalizations(CFBundleRef bundle)
     return (CFArrayRef)mut;
 }
 
+/* v97 (upstream 7322fdc1): write a preferences file the way CoreFoundation does -- into a
+ * temporary beside it, fsync, then rename over it. The direct O_TRUNC write this replaces
+ * leaves a truncated .GlobalPreferences.plist behind if SpringBoard dies mid-write, and CF
+ * reads that as "no preferences at all" on the next boot. */
+static int
+sb26_atomic_write_file(const char *target_path, const void *bytes, size_t len,
+    mode_t mode, uid_t uid, gid_t gid)
+{
+    char tmp_path[PATH_MAX];
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", target_path, getpid());
+    if (n <= 0 || (size_t)n >= sizeof(tmp_path)) return -1;
+
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) return -1;
+
+    ssize_t written = write(fd, bytes, len);
+    if (written < 0 || (size_t)written != len) {
+        close(fd);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (fsync(fd) != 0) {
+        close(fd);
+        unlink(tmp_path);
+        return -1;
+    }
+    close(fd);
+    if (uid != (uid_t)-1 && gid != (gid_t)-1) chown(tmp_path, uid, gid);
+    chmod(tmp_path, mode);
+    if (rename(tmp_path, target_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
 /*
  * Ensure .GlobalPreferences.plist in /private/var/mobile/Library/Preferences/
  * has AppleLanguages with "zh-Hans-CN" prioritized.
@@ -604,6 +675,12 @@ sb26_hook_CFBundleCopyBundleLocalizations(CFBundleRef bundle)
 static void
 sb26_ensure_chinese_preferences(void)
 {
+    /* v97 (upstream 7322fdc1): SpringBoard only. Preferences loads this library too, and
+     * two processes rewriting the same plist is a race with no upside -- both would write
+     * identical bytes, and one of them can lose the rename. */
+    const char *prog = getprogname();
+    if (!prog || strcmp(prog, "SpringBoard") != 0) return;
+
     static int preferences_ensured = 0;
     if (preferences_ensured) return;
     preferences_ensured = 1;
@@ -634,6 +711,10 @@ sb26_ensure_chinese_preferences(void)
                         CFRelease(data);
                         if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID()) dict = (CFMutableDictionaryRef)plist;
                         else if (plist) CFRelease(plist);
+                    } else {
+                        /* CFDataCreateWithBytesNoCopy only takes the buffer on success
+                         * (v97, upstream 7322fdc1: this was a per-boot leak). */
+                        free(buf);
                     }
                 } else {
                     free(buf);
@@ -681,14 +762,8 @@ sb26_ensure_chinese_preferences(void)
 
         CFDataRef xml_data = CFPropertyListCreateData(kCFAllocatorDefault, dict, kCFPropertyListXMLFormat_v1_0, 0, NULL);
         if (xml_data) {
-            int wfd = open(pref_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (wfd >= 0) {
-                ssize_t written = write(wfd, CFDataGetBytePtr(xml_data), (size_t)CFDataGetLength(xml_data));
-                (void)written;
-                close(wfd);
-                chown(pref_path, 501, 501);
-                chmod(pref_path, 0644);
-            }
+            sb26_atomic_write_file(pref_path, CFDataGetBytePtr(xml_data),
+                (size_t)CFDataGetLength(xml_data), 0644, 501, 501);
             CFRelease(xml_data);
         }
         CFPreferencesSetAppValue(CFSTR("AppleLanguages"), new_langs, kCFPreferencesAnyApplication);
