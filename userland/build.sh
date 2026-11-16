@@ -635,10 +635,21 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# skipped and the image gets whatever object was left from an earlier run. That is how a
 	# driver built on 23 October reached a 28 October image (docs/plan/k90auto-run-protocol.md).
 	[ -f obj/libredwoodmetal.dylib ] || { echo "build.sh: obj/libredwoodmetal.dylib missing"; exit 1; }
-	[ obj/libredwoodmetal.dylib -nt src/redwoodmetal.m ] || {
-		echo "build.sh: obj/libredwoodmetal.dylib is older than src/redwoodmetal.m; build it (IOS=../ios26) before staging"
-		exit 1
-	}
+	# The dylib is built by the macOS CI (build-host-tools.yml) and dropped in by hand on
+	# this host, so its stamp is whenever the artifact landed -- which is legitimately older
+	# than a source edit that pushed the very build that made it. What matters is that it
+	# carries the source: compare content, not time. The two v97 sources together hash into
+	# the check below; update it when either source changes for real.
+	metal_stamp=$(cat src/redwoodmetal.m src/redwooddrawable.m src/redwood_drawable.h | shasum -a 256 | cut -c1-12)
+	case "$(cat obj/.metal-stamp 2>/dev/null)" in
+	  "$metal_stamp") ;;
+	  *)
+	    echo "build.sh: obj/libredwoodmetal.dylib was not built from the current src/redwoodmetal.m + redwooddrawable.m + redwood_drawable.h" >&2
+	    echo "build.sh: expected stamp $metal_stamp, obj/.metal-stamp says $(cat obj/.metal-stamp 2>/dev/null || echo '(nothing)')" >&2
+	    echo "build.sh: rebuild it (IOS=../ios26 on macOS, or let build-host-tools.yml make it) and write that line into obj/.metal-stamp" >&2
+	    exit 1
+	    ;;
+	esac
 	cp obj/libredwoodmetal.dylib root/lib/
 	# The AIR library comes from the Mesa build rather than from this script, so its architecture is
 	# not decided here -- and dyld refuses an arm64 slice in an arm64e process outright, which leaves
