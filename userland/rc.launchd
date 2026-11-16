@@ -1,0 +1,19 @@
+# Hand process 1 over to the real iOS launchd.
+#
+# Why from /redwood and not /sbin/launchd.ios: the system volume (md0) is the
+# root, but a pid 1 execve() of a file on it fails in namei even though the same
+# binary runs fine when forked and even though 7-Zip extracts it by path. The
+# small root image (md1, /redwood) has no such problem -- exec of
+# /redwood/bin/child from pid 1 works -- so the same binary is carried there.
+#
+# init has already mounted /private/var (ramfs) and created its directories, and
+# stage0 has bound /redwood/LaunchDaemons onto /System/Library/LaunchDaemons and
+# /redwood/xpc onto /System/Library/xpc, so launchd reads the job cache that
+# mkcache.py wrote (launchd_unsecure_cache=1 skips its signature check).
+#
+# Register the Metal plugin before launchd hands out renderers (v93 semantics,
+# dropped in the v94/v95 restructure and back as of v102: without this line
+# SpringBoard takes two SIGSEGVs per round once the glass/icon work runs --
+# v100 restored it and the round went crash-free).
+/redwood/bin/metal_props on ../../../redwood/lib/RedwoodMetal RedwoodMetalDevice
+exec /redwood/sbin/launchd.ios
