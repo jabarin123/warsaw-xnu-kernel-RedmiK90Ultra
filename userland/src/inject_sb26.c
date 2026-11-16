@@ -1691,7 +1691,20 @@ sb26_fill_one_icon(id view)
     prev_root = sb26_utf8(prev);
     if (prev_root && cached && strcmp(prev_root, root) == 0) {
         cg = sb26_ask(cached, "CGImage");
-        if (cg) sb26_icons_refreshed++;
+        if (cg) {
+            /* v104: this view already carries our picture. The old path re-asserted
+             * setContents: on EVERY late step (nine of them in 150 s) "because
+             * -updateImage: can replace layer.contents behind our back" -- but every
+             * re-assert is a layer commit on the main thread for 23 icons at once,
+             * which is exactly the steady CPU churn that makes the 120 Hz pipe miss
+             * frames, and it fights the native updateImageAnimated: state machine
+             * upstream called out. Now: a view whose layer still has contents is left
+             * alone; only a layer that lost its contents (native nil / recycled view)
+             * gets the re-assert. The bundle key keeps mismatching labels impossible. */
+            id have = sb26_ask(layer, "contents");
+            if (have) { sb26_icons_refreshed++; return; }
+            sb26_icons_refreshed++;
+        }
         else cached = nil;
     }
     if (!cg) {
@@ -1945,7 +1958,10 @@ install_sb26(void)
     install_unlock();
     sb26_install_all_icon_layer_fallbacks();
     {
-        static const int icon_delays[] = { 3, 8, 18, 30, 45, 60, 90, 120, 150 };
+        /* v104: was {3,8,18,30,45,60,90,120,150} -- nine full-window-tree walks plus a
+         * glass pass each, all on the main thread. Provider classes load in the first
+         * minute; five steps keep the same coverage with far less churn. */
+        static const int icon_delays[] = { 3, 8, 30, 60, 120 };
         for (unsigned i = 0; i < sizeof(icon_delays) / sizeof(icon_delays[0]); i++)
             dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)icon_delays[i] * NSEC_PER_SEC),
                 dispatch_get_main_queue(), (void *)(uintptr_t)icon_delays[i], sb26_icon_late_step);
