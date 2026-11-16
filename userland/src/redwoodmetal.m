@@ -99,6 +99,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <IOKit/IOKitLib.h>
+#include <mach/mach.h>
+#include <mach/mach_host.h>      /* v103: host_statistics64 in the lifecycle beat */
 #include <mach/mach_time.h>
 #include <dlfcn.h>
 #include <dispatch/dispatch.h>   /* rw_stitch_install_hooks' dispatch_once */
@@ -270,11 +272,26 @@ rwm_install_crash_logger(void)
  * or leaves through exit(). This tells the two apart, and dates the moment: a beat every
  * two seconds, an atexit line if it leaves of its own accord, and a line if SIGTERM (what
  * launchd sends first) ever arrives. Only iconservicesagent prints, so the log stays small.
+ * v103: SpringBoard died twice in v102 (pid 31 at ~294 s, pid 89 seconds later, pid 159 then
+ * lived out the window) with NO "rwm CRASH" line, so it dies through the same unseen path.
+ * The lifecycle loggers now cover SpringBoard and backboardd too, and the beat answers
+ * host_statistics64, so a memory-pressure kill (no swap on the ramfs /private/var leaves
+ * only the compressor) shows as free_count collapsing right before the beat stops.
  * --------------------------------------------------------------------------------------- */
 static const char *
 rwm_prog(void)
 {
 	return getprogname() ? getprogname() : "?";
+}
+
+static int
+rwm_lifecycle_wanted(const char *prog)
+{
+	static const char *const names[] = { "iconservicesagent", "SpringBoard", "backboardd" };
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		if (strcmp(prog, names[i]) == 0)
+			return 1;
+	return 0;
 }
 
 static void
@@ -298,7 +315,22 @@ rwm_beater(void *arg)
 {
 	(void)arg;
 	for (;;) {
-		fprintf(stderr, "rwm beat: %s %d\n", rwm_prog(), getpid());
+		vm_statistics64_data_t vm;
+		mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+		if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+		    (host_info64_t)&vm, &cnt) == KERN_SUCCESS) {
+			/* free_count includes speculatively purgeable pages; wire_count is the
+			 * permanently wired part, compressor_page_count is what the compressor
+			 * holds (16 KiB pages). On the ramfs /private/var there is no swap, so
+			 * compressor growth is the only relief the system has. */
+			fprintf(stderr, "rwm beat: %s %d free %llu wire %llu comp %llu\n",
+			    rwm_prog(), getpid(),
+			    (unsigned long long)vm.free_count,
+			    (unsigned long long)vm.wire_count,
+			    (unsigned long long)vm.compressor_page_count);
+		} else {
+			fprintf(stderr, "rwm beat: %s %d\n", rwm_prog(), getpid());
+		}
 		sleep(2);
 	}
 	return NULL;
@@ -313,7 +345,7 @@ rwm_install_lifecycle_loggers(void)
 	pthread_t thread;
 	int signals[] = { SIGTERM, SIGINT, SIGHUP };
 
-	if (!prog || strcmp(prog, "iconservicesagent") != 0) {
+	if (!prog || !rwm_lifecycle_wanted(prog)) {
 		return;
 	}
 	action.sa_sigaction = rwm_term_logger;
