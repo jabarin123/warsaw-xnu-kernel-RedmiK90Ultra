@@ -12,11 +12,15 @@ XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB
 > [@wannqn](https://t.me/wannqn) / [@hxfuxyyXD](https://t.me/hxfuxyyXD)，动态见 [t.me/oosexgangdevs](https://t.me/oosexgangdevs)。
 > 本仓库是同机型开发者的本地工作分支，没有上游授权，不是上游官方仓库。
 
-## 当前进展（v93，2026-11-15）
+## 当前进展（v102，2026-11-16）
 
-**iOS 26 主屏桌面可交互，图标样式已定稿。** launchd 全部 boot task 通过、原生
-1280×2772 1:1 渲染、23 个图标全部可见、文件夹可打开、点 App 能启动，
-设置 / 控制中心 / WiFi / Home 上滑手势均正常。当前真机跑的是 `payload-v93.bin`。
+**iOS 26 主屏桌面可交互，图标样式已定稿；v95b 以来的 SpringBoard SIGSEGV 回归已修复。**
+launchd 全部 boot task 通过、原生 1280×2772 1:1 渲染、23 个图标全部可见、文件夹可打开、
+点 App 能启动，设置 / 控制中心 / WiFi / Home 上滑手势均正常。当前真机跑的是 `payload-v102.bin`
+（520 s 观察窗 0 崩溃）。
+
+根因与修复见 **[docs/V102-METALPROPS-FIX.md](docs/V102-METALPROPS-FIX.md)**：v94/v95 重构删掉了
+`/etc/rc` 里的 `metal_props on` 注册行，v102 从 `rc.launchd` 模板恢复后 SpringBoard 回到零崩溃。
 
 | 载荷 | 状态 |
 |---|---|
@@ -24,8 +28,11 @@ XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB
 | `payload-v89.bin` | ⚠️ A+C 试验：逐像素 alpha 被忽略、Dock group opacity 整层消失 |
 | `payload-v91.bin` | ❌ layer opacity 试验：除时钟外图标全消失，勿用 |
 | `payload-v92.bin` | ✅ v86 + 图标 squircle 圆角（C 开关全关），与 v86 主屏仅 1.55% 像素差异 |
-| `payload-v93.bin` | ✅ **当前在用**：v92 + 纹理 `MTLBuffer` 修复（`-buffer` 返回真实值 + 写回），真机桌面正常、`rwm CRASH` 0 |
+| `payload-v93.bin` | ✅ v92 + 纹理 `MTLBuffer` 修复（`-buffer` 返回真实值 + 写回） |
 | `payload-v94.bin` | ❌ 实验：`iconservicesagent` 强制 GPU 图标路径。能跑但渲染不完整（缺层、Dock 白底丢失）并崩 2 次，留作证据勿用 |
+| `payload-v97.bin` | ✅ v96 + 上游四修复（XR 像素格式折叠 / widget surface ≥ 检查 / 解锁前唤醒 / 原子写 prefs），桌面正常但有 2 次 SIGSEGV |
+| `payload-v99.bin` | ❌ cold=120 试验：桌面 55 s 后 SIGSEGV→黑屏（崩溃与 cold 值无关，见 v102 文档） |
+| `payload-v102.bin` | ✅ **当前在用**：恢复 `/etc/rc` 的 `metal_props` 注册行 + cold=80，520 s 观察窗 **0 崩溃** |
 
 v92 的圆角裁剪顺带去掉了 v86 图标上那条固定的白色弧形高光和四边浅色镶边，
 「图标边缘贴纸感」明显减轻，维护者对图标样式满意。v93 把纹理底下的 `MTLBuffer`
