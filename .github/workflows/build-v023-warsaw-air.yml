@@ -1,0 +1,162 @@
+name: Build v0.2.3+ libannibaleair.dylib (arm64e)
+
+on:
+  workflow_dispatch:
+    inputs:
+      userland_ref:
+        description: 'iola1999/hackios-xnu-userland commit or branch'
+        required: false
+        default: '27dc30ad'
+
+env:
+  MESA_VERSION: '26.2.5'
+  MESA_SHA256: '794b3d1729075dae7ebd47c7283b7ca0cdb5dec668f7f11cc0a5d82f6138a0a5'
+
+jobs:
+  air:
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Select Xcode 26.3
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app 2>/dev/null || \
+          sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
+          xcodebuild -version
+          echo "iphoneos SDK $(xcrun --sdk iphoneos --show-sdk-version) at $(xcrun --sdk iphoneos --show-sdk-path)"
+
+      - name: Install build tools (bison / flex / gpatch / ninja / meson 1.12.1)
+        run: |
+          set -euo pipefail
+          brew install bison flex gpatch ninja
+          BISON_DIR=$(brew --prefix bison)/bin
+          FLEX_DIR=$(brew --prefix flex)/bin
+          GPATCH_DIR=$(brew --prefix gpatch)/bin
+          echo "HOST_BIN=$BISON_DIR:$FLEX_DIR:$GPATCH_DIR" >> "$GITHUB_ENV"
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip -q install --upgrade pip
+          /tmp/venv/bin/pip -q install mako pyyaml packaging "meson==1.12.1"
+          /tmp/venv/bin/meson --version
+
+      - name: Fetch upstream hackios-xnu-userland
+        env:
+          USERLAND_SHA: ${{ inputs.userland_ref || '27dc30ad' }}
+        run: |
+          set -euo pipefail
+          git init -q /tmp/u
+          git -C /tmp/u remote add origin https://github.com/iola1999/hackios-xnu-userland.git
+          git -C /tmp/u fetch -q --depth 1 origin "$USERLAND_SHA"
+          git -C /tmp/u checkout -q FETCH_HEAD
+          echo "upstream userland HEAD: $(git -C /tmp/u rev-parse HEAD)"
+          test -d /tmp/u/tools/mesa/annibale-drm
+          test -d /tmp/u/tools/mesa/air
+
+      - name: Unpack Mesa 26.2.5 and apply strict --fuzz=0 patches
+        run: |
+          set -euo pipefail
+          export PATH="$HOST_BIN:$PATH"
+          mkdir -p /tmp/mesa/out
+          cd /tmp/mesa
+          curl -sSL --fail -o "mesa-$MESA_VERSION.tar.xz" \
+            "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz" || \
+          curl -sSL --fail -o "mesa-$MESA_VERSION.tar.xz" \
+            "https://mesa.freedesktop.org/archive/mesa-$MESA_VERSION.tar.xz"
+          echo "$MESA_SHA256  mesa-$MESA_VERSION.tar.xz" | shasum -a 256 -c -
+          tar xJf "mesa-$MESA_VERSION.tar.xz"
+
+          PATCHLOG=/tmp/mesa/out/patch.log
+          : > "$PATCHLOG"
+          for p in $(find /tmp/u/tools/mesa -maxdepth 1 -name '*.patch' | LC_ALL=C sort) \
+                   $(find /tmp/u/tools/mesa/rebase-26 -maxdepth 1 -name '*.patch' | LC_ALL=C sort); do
+            name=$(basename "$p")
+            printf '=== %s\n' "$p" >> "$PATCHLOG"
+            gpatch -s --fuzz=0 --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1
+            echo "ok       $name"
+          done
+
+          rm -rf "mesa-$MESA_VERSION/src/annibale-drm" "mesa-$MESA_VERSION/src/compiler/air"
+          cp -r /tmp/u/tools/mesa/annibale-drm "mesa-$MESA_VERSION/src/annibale-drm"
+          cp -r /tmp/u/tools/mesa/air "mesa-$MESA_VERSION/src/compiler/air"
+
+      - name: Meson setup and ninja libannibaleair.dylib
+        run: |
+          set -euo pipefail
+          export PATH="$HOST_BIN:/tmp/venv/bin:$PATH"
+          export PYTHONHASHSEED=0
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CLANG=$(xcrun --find clang)
+          CLANGXX=$(xcrun --find clang++)
+          AR=$(xcrun --find ar)
+          RANLIB=$(xcrun --find ranlib)
+          STRIP=$(xcrun --find strip)
+          cat > /tmp/mesa/cross.ini <<INI
+          [binaries]
+          bison = '$(brew --prefix bison)/bin/bison'
+          c = ['$CLANG', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0']
+          cpp = ['$CLANGXX', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0', '-fuse-cxa-atexit']
+          objc = ['$CLANG', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0']
+          ar = '$AR'
+          ranlib = '$RANLIB'
+          strip = '$STRIP'
+          pkg-config = '/usr/bin/false'
+
+          [host_machine]
+          system = 'darwin'
+          subsystem = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64e'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          INI
+          sed -i '' 's/^[[:space:]]*//' /tmp/mesa/cross.ini
+          meson setup /tmp/mesa/build "/tmp/mesa/mesa-$MESA_VERSION" \
+            --cross-file /tmp/mesa/cross.ini \
+            --wrap-mode=nofallback --prefix=/annibale --libdir=lib --buildtype=release \
+            -Db_ndebug=true -Dplatforms= -Dgallium-drivers=softpipe,freedreno -Dfreedreno-kmds=msm \
+            -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dosmesa=true \
+            -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true \
+            -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled \
+            -Dvalgrind=disabled -Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= \
+            -Dgallium-va=disabled -Dlmsensors=disabled -Dbuild-tests=false 2>&1 \
+            | tee /tmp/mesa/out/meson-setup.log
+
+          TARGET=src/gallium/drivers/freedreno/libannibaleair.dylib
+          ninja -C /tmp/mesa/build "$TARGET" 2>&1 | tee /tmp/mesa/out/ninja.log
+          B="/tmp/mesa/build/$TARGET"
+          O="/tmp/mesa/out/libannibaleair.dylib"
+          strip -x -o "$O" "$B"
+          install_name_tool -id /annibale/lib/libannibaleair.dylib "$O"
+          /usr/bin/codesign --force --sign - "$O"
+          otool -D "$O"
+          otool -hv "$O" | tail -2
+          nm -gU "$O" | awk '{ print $NF }' | LC_ALL=C sort > /tmp/mesa/out/exports-rwa.txt
+          RWA=$(grep -c '^_rwa_' /tmp/mesa/out/exports-rwa.txt || true)
+          echo "$RWA rwa_* exports"
+          [ "${RWA:-0}" -gt 0 ] || { echo "::error::no rwa_* exports"; exit 1; }
+          [ "$(otool -D "$O" | sed -n 2p)" = /annibale/lib/libannibaleair.dylib ] || { echo "::error::bad install name"; exit 1; }
+          shasum -a 256 "$O" | tee /tmp/mesa/out/libannibaleair.sha256
+          ls -lh /tmp/mesa/out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libannibaleair-v023-arm64e
+          path: /tmp/mesa/out/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to v023-air-artifacts orphan branch
+        run: |
+          set -euo pipefail
+          cd /tmp/mesa/out
+          git init -q
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git checkout -q -b v023-air-artifacts
+          git add -A
+          git commit -qm "libannibaleair: mesa $MESA_VERSION, userland ${{ inputs.userland_ref || '27dc30ad' }}"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q -f origin v023-air-artifacts
+          echo "v023-air-artifacts: $(git rev-parse --short HEAD)"
