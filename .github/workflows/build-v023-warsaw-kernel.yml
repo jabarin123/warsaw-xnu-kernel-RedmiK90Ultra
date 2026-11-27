@@ -6,7 +6,7 @@ on:
       upstream_ref:
         description: 'iola1999/hackios-xnu-kernel commit or branch'
         required: false
-        default: '31a1f16f'
+        default: '31a1f16f8fb37a3a702555e10c7fcdd8c7349dec'
       machine:
         description: 'MACHINE (BCM2837)'
         required: false
@@ -50,7 +50,7 @@ jobs:
 
       - name: Clone upstream hackios-xnu-kernel and apply warsaw memory fixes
         env:
-          UPSTREAM_REF: ${{ inputs.upstream_ref || '31a1f16f' }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref || '31a1f16f8fb37a3a702555e10c7fcdd8c7349dec' }}
         run: |
           set -euo pipefail
           git init -q /tmp/k
@@ -163,7 +163,7 @@ jobs:
           git config user.email actions@github.com
           git checkout -q -b v023-kernel-artifacts
           git add -A
-          git commit -qm "v023-warsaw kernel: upstream ${{ inputs.upstream_ref || '31a1f16f' }}"
+          git commit -qm "v023-warsaw kernel: upstream ${{ inputs.upstream_ref || '31a1f16f8fb37a3a702555e10c7fcdd8c7349dec' }}"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git push -q -f origin v023-kernel-artifacts
           echo "v023-kernel-artifacts: $(git rev-parse --short HEAD)"
