@@ -71,9 +71,25 @@ jobs:
                    $(find /tmp/u/tools/mesa/rebase-26 -maxdepth 1 -name '*.patch' | LC_ALL=C sort); do
             name=$(basename "$p")
             printf '=== %s\n' "$p" >> "$PATCHLOG"
-            gpatch -s --fuzz=0 --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1
-            echo "ok       $name"
+            if gpatch -s --fuzz=0 --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1; then
+              echo "ok       $name"
+            else
+              echo "RETRY(fuzz) $name:"
+              tail -10 "$PATCHLOG"
+              gpatch -s --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1 || {
+                echo "::error::patch failed: $name"
+                tail -30 "$PATCHLOG"
+                exit 1
+              }
+              echo "ok(fuzz) $name"
+            fi
           done
+          REJS=$(find "mesa-$MESA_VERSION" -name '*.rej' | LC_ALL=C sort)
+          if [ -n "$REJS" ]; then
+            echo "::error::reject files found:"
+            echo "$REJS"
+            exit 1
+          fi
 
           rm -rf "mesa-$MESA_VERSION/src/annibale-drm" "mesa-$MESA_VERSION/src/compiler/air"
           cp -r /tmp/u/tools/mesa/annibale-drm "mesa-$MESA_VERSION/src/annibale-drm"
