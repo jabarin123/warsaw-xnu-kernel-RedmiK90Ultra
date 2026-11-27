@@ -1,0 +1,190 @@
+name: Build v0.2.3+ warsaw XNU 12377 kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: 'iola1999/hackios-xnu-kernel commit or branch'
+        required: false
+        default: '31a1f16f'
+      machine:
+        description: 'MACHINE (BCM2837)'
+        required: false
+        default: 'BCM2837'
+      kconfig:
+        description: 'KERNEL_CONFIG'
+        required: false
+        default: 'DEVELOPMENT'
+
+permissions:
+  contents: write
+
+jobs:
+  kernel:
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: patches/v023-warsaw
+
+      - name: Select Xcode 26.3
+        run: |
+          ls -d /Applications/Xcode*.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos -find iig
+
+      - name: Configure git LF and tools (gmake / unifdef / nproc)
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          command -v gmake || brew install make
+          command -v unifdef || brew install unifdef
+          if ! command -v nproc >/dev/null 2>&1; then
+            printf '#!/bin/sh\nsysctl -n hw.ncpu\n' | sudo tee /opt/homebrew/bin/nproc >/dev/null
+            sudo chmod +x /opt/homebrew/bin/nproc
+          fi
+          echo "nproc=$(nproc) gmake=$(gmake --version | head -1)"
+
+      - name: Clone upstream hackios-xnu-kernel and apply warsaw memory fixes
+        env:
+          UPSTREAM_REF: ${{ inputs.upstream_ref || '31a1f16f' }}
+        run: |
+          set -euo pipefail
+          git init -q /tmp/k
+          git -C /tmp/k remote add origin https://github.com/iola1999/hackios-xnu-kernel.git
+          git -C /tmp/k fetch -q --depth 1 origin "$UPSTREAM_REF"
+          git -C /tmp/k checkout -q FETCH_HEAD
+          echo "upstream kernel HEAD: $(git -C /tmp/k rev-parse HEAD)"
+
+          # Add 83-osfmk%vm%vm_kern.c.patch (4 GiB kmem_data_shared_range) to series
+          cp "$GITHUB_WORKSPACE/patches/v023-warsaw/83-osfmk%vm%vm_kern.c.patch" \
+             "/tmp/k/xnu26/patches/83-osfmk%vm%vm_kern.c.patch"
+          printf '\n83-osfmk%%vm%%vm_kern.c.patch\n' >> /tmp/k/xnu26/patches/series
+          # Strip any blank lines in series
+          python3 -c '
+          import pathlib
+          p = pathlib.Path("/tmp/k/xnu26/patches/series")
+          lines = [l.strip() for l in p.read_text().splitlines() if l.strip()]
+          p.write_text("\n".join(lines) + "\n")
+          print("series tail:", lines[-3:])
+          '
+
+          # Apply AnnibaleGPU + MiniIOSurface cross-client OOM eviction patches
+          python3 "$GITHUB_WORKSPACE/patches/v023-warsaw/apply-warsaw-gpu-oom.py" /tmp/k
+
+      - name: Fetch xnu-12377.121.6 and apply all patches
+        run: |
+          set -euo pipefail
+          cd /tmp/k
+          bash xnu26/apply.sh
+          D=/tmp/k/xnu-src/xnu-12377.121.6
+          grep -n "warsaw: GPU BOs" "$D/osfmk/vm/vm_kern.c"
+          grep -n "AnnibaleGPUEvictKept" "$D/iokit/Kernel/AnnibaleGPUMemory.inc" "$D/iokit/Kernel/MiniIOSurface.cpp"
+
+      - name: Dependencies stage1 + availability.pl
+        run: |
+          set -euo pipefail
+          cd /tmp/k
+          bash xnu26/deps-macos.sh --stage1
+          AP=/tmp/k/xnu-deps/26/sdk/iPhoneOS.sdk/usr/local/libexec/availability.pl
+          [ -x "$AP" ] || { echo "::error::missing availability.pl"; exit 1; }
+          HOST_SDK=$(xcrun --sdk macosx --show-sdk-path)
+          sudo mkdir -p "$HOST_SDK/usr/local/libexec" 2>/dev/null || mkdir -p "$HOST_SDK/usr/local/libexec"
+          sudo cp -f "$AP" "$HOST_SDK/usr/local/libexec/availability.pl"
+
+      - name: Export headers + stage2 libs
+        run: |
+          set -euo pipefail
+          cd /tmp/k
+          bash xnu26/build-macos.sh exporthdrs installhdrs
+          bash xnu26/deps-macos.sh --stage2
+
+      - name: Build ath12k (WCN7850 Wi-Fi driver)
+        run: |
+          set -euo pipefail
+          cd /tmp/k
+          time bash tools/mk-ath12k.sh 2>&1 | tee "$RUNNER_TEMP/ath12k.log"
+          LX=/tmp/k/xnu-deps/build/ath12k/out/ath12k.o
+          [ -f "$LX" ] || { echo "::error::missing ath12k.o"; exit 1; }
+          ls -la "$LX"
+
+      - name: Build XNU kernel (pass 1)
+        env:
+          MACHINE: ${{ inputs.machine || 'BCM2837' }}
+          KERNEL_CONFIG: ${{ inputs.kconfig || 'DEVELOPMENT' }}
+        run: |
+          set -euo pipefail
+          cd /tmp/k
+          time bash xnu26/build-macos.sh 2>&1 | tee "$RUNNER_TEMP/kernel1.log"
+
+      - name: Generate ath12k QMI header and rebuild (pass 2)
+        env:
+          MACHINE: ${{ inputs.machine || 'BCM2837' }}
+          KERNEL_CONFIG: ${{ inputs.kconfig || 'DEVELOPMENT' }}
+        run: |
+          set -euo pipefail
+          cd /tmp/k
+          time bash tools/mk-wlfw-ath12k.sh 2>&1 | tee "$RUNNER_TEMP/qmi.log"
+          H=$(find /tmp/k/xnu-src -name 'annibale_wlfw_ath12k.h' | head -1)
+          [ -n "$H" ] || { echo "::error::missing annibale_wlfw_ath12k.h"; exit 1; }
+          ls -la "$H"
+          touch /tmp/k/xnu-src/xnu-12377.121.6/bsd/dev/mhi/mhi_pcie_wlfw.c 2>/dev/null || \
+            find /tmp/k/xnu-src/xnu-12377.121.6/bsd -name 'mhi_pcie_wlfw.c' -exec touch {} +
+          time bash xnu26/build-macos.sh 2>&1 | tee "$RUNNER_TEMP/kernel2.log"
+          K=$(find /tmp/k/xnu-src/xnu-12377.121.6/BUILD/obj -maxdepth 3 -name 'mach.development.bcm2837' -type f | head -1)
+          [ -n "$K" ] || { echo "::error::missing mach.development.bcm2837"; exit 1; }
+          ls -la "$K"
+          shasum -a 256 "$K"
+          strings -a "$K" | grep -m2 'reclaimed %llu MB from kept pools'
+          echo "ath12k strings: $(strings -a "$K" | grep -c 'ath12k' || true)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-v023-warsaw
+          path: /tmp/k/xnu-src/xnu-12377.121.6/BUILD/obj/**/mach.development.bcm2837
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
+
+      - name: Publish to v023-kernel-artifacts orphan branch
+        run: |
+          set -euo pipefail
+          K=$(find /tmp/k/xnu-src/xnu-12377.121.6/BUILD/obj -maxdepth 3 -name 'mach.development.bcm2837' -type f | head -1)
+          O=/tmp/kernel-out
+          mkdir -p "$O"
+          cp "$K" "$O/kernel-v023-warsaw.bin"
+          shasum -a 256 "$O/kernel-v023-warsaw.bin" > "$O/kernel-v023-warsaw.sha256"
+          cd "$O"
+          git init -q
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git checkout -q -b v023-kernel-artifacts
+          git add -A
+          git commit -qm "v023-warsaw kernel: upstream ${{ inputs.upstream_ref || '31a1f16f' }}"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q -f origin v023-kernel-artifacts
+          echo "v023-kernel-artifacts: $(git rev-parse --short HEAD)"
+
+      - name: Write diagnostics on failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p "$GITHUB_WORKSPACE/ci"
+          {
+            echo "run: $GITHUB_RUN_ID time: $(date -u)"
+            for L in "$RUNNER_TEMP"/ath12k.log "$RUNNER_TEMP"/kernel1.log "$RUNNER_TEMP"/qmi.log "$RUNNER_TEMP"/kernel2.log; do
+              [ -f "$L" ] || continue
+              echo "=== $(basename "$L") ==="
+              grep -n -iE "error:|FAILED|undefined|No such file" "$L" | tail -60
+              tail -80 "$L"
+            done
+          } > "$GITHUB_WORKSPACE/ci/last-v023-kernel-failure.txt" 2>&1
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "warsaw-ci"
+          git config user.email "ci@warsaw.local"
+          git add -f ci/last-v023-kernel-failure.txt
+          git commit -m "ci: v023 kernel failure run=$GITHUB_RUN_ID" && git push origin HEAD:main || true
