@@ -862,15 +862,14 @@ sb26_install_crash_logger(void)
 static struct { char key[72]; xpc_object_t reply; } sb26_xpc_cache[SB26_XPC_CACHE_MAX];
 static unsigned sb26_xpc_cache_n;
 static unsigned sb26_xpc_cache_last;
+static pthread_mutex_t sb26_xpc_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* v96: how long a COLD iconservices key may hold the calling thread. 300 ms was v70's
- * compromise after a 4 s cap killed SpringBoard; the taps that pay it are the ones
- * that stutter, and a live agent answers in tens of milliseconds, so the default drops
- * to 80 ms and glass.conf can retune it without a rebuild.
- * The reply is still never NULL: a timeout replays the cached reply (wrong icon beats
- * a dead SpringBoard), exactly as before. Declared here, above sb26_hook_xpc_sync,
- * because that is where it is read; sb26_glass_conf() fills it in later. */
-static double glass_xpc_cold_ms = 80.0;
+/* v104b: how long a COLD iconservices key may hold the calling thread. 80 ms (v96-v103)
+ * was shorter than iconservicesagent's normal cold reply, causing 100% cache misses
+ * (icon_hit=0, icon_timeout=174 vs v93's 80) AND triggering a use-after-free SIGTRAP
+ * when the async block signalled a semaphore already freed on timeout. Default 200 ms,
+ * tunable via glass.conf (clamped 20..500 ms), and late replies now warm the cache. */
+static double glass_xpc_cold_ms = 200.0;
 
 /* Key: length + first 64 bytes of the request's "root" data — icon requests for the
  * same icon repeat byte-for-byte (the "sequence" number lives outside the blob). */
@@ -892,31 +891,45 @@ sb26_xpc_cache_key(xpc_object_t message, char *key, size_t keysz)
             ((const unsigned char *)bytes)[i]);
 }
 
+/* Returns a RETAINED xpc_object_t (caller owns) or NULL. Thread-safe. */
 static xpc_object_t
-sb26_xpc_cache_get(const char *key)
+sb26_xpc_cache_get_retained(const char *key)
 {
-    for (unsigned i = 0; i < sb26_xpc_cache_n; i++)
-        if (!strcmp(sb26_xpc_cache[i].key, key))
-            return sb26_xpc_cache[i].reply;
-    return NULL;
+    xpc_object_t out = NULL;
+    pthread_mutex_lock(&sb26_xpc_cache_lock);
+    for (unsigned i = 0; i < sb26_xpc_cache_n; i++) {
+        if (!strcmp(sb26_xpc_cache[i].key, key) && sb26_xpc_cache[i].reply) {
+            out = xpc_retain(sb26_xpc_cache[i].reply);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&sb26_xpc_cache_lock);
+    return out;
 }
 
-/* v69: a decodable reply, any reply. When the agent dies with a request in flight the async
- * API can hand back NULL (v68: two of those still reached NSXPCConnection and aborted
- * SpringBoard). A cached ISGenerationResponse for ANOTHER icon decodes fine and shows that
- * icon; a crash shows nothing. Last resort only, and only ever a real captured reply. */
+/* v69: a decodable reply, any reply. Returns a RETAINED xpc_object_t or NULL. Thread-safe. */
 static xpc_object_t
-sb26_xpc_cache_any(void)
+sb26_xpc_cache_any_retained(void)
 {
-    if (sb26_xpc_cache_n == 0) return NULL;
-    return sb26_xpc_cache[sb26_xpc_cache_last].reply;
+    xpc_object_t out = NULL;
+    pthread_mutex_lock(&sb26_xpc_cache_lock);
+    if (sb26_xpc_cache_n > 0 && sb26_xpc_cache[sb26_xpc_cache_last].reply)
+        out = xpc_retain(sb26_xpc_cache[sb26_xpc_cache_last].reply);
+    pthread_mutex_unlock(&sb26_xpc_cache_lock);
+    return out;
 }
 
 static void
 sb26_xpc_cache_put(const char *key, xpc_object_t reply)
 {
     if (!reply || xpc_get_type(reply) != XPC_TYPE_DICTIONARY) return;
-    if (sb26_xpc_cache_get(key)) return;
+    pthread_mutex_lock(&sb26_xpc_cache_lock);
+    for (unsigned i = 0; i < sb26_xpc_cache_n; i++) {
+        if (!strcmp(sb26_xpc_cache[i].key, key)) {
+            pthread_mutex_unlock(&sb26_xpc_cache_lock);
+            return;
+        }
+    }
     unsigned slot = sb26_xpc_cache_n;
     if (slot >= SB26_XPC_CACHE_MAX) {
         slot = sb26_xpc_cache_n % SB26_XPC_CACHE_MAX;
@@ -927,6 +940,30 @@ sb26_xpc_cache_put(const char *key, xpc_object_t reply)
     snprintf(sb26_xpc_cache[slot].key, sizeof(sb26_xpc_cache[slot].key), "%s", key);
     sb26_xpc_cache[slot].reply = xpc_retain(reply);
     sb26_xpc_cache_last = slot;
+    pthread_mutex_unlock(&sb26_xpc_cache_lock);
+}
+
+/* Refcounted handoff between sb26_hook_xpc_sync and the async XPC reply block.
+ * Fixes the v103 SpringBoard SIGTRAP (libdispatch brk #1 with x0=0xf KERN_INVALID_NAME /
+ * x0=0x16 EINVAL): in non-ARC C, capturing dispatch_semaphore_t in a block does NOT retain
+ * it, so releasing the semaphore on timeout freed it while the reply block was still in
+ * flight. refs starts at 2 (caller + block); whoever drops refs to 0 frees sem and struct. */
+struct sb26_xpc_wait {
+    dispatch_semaphore_t sem;
+    xpc_object_t reply;
+    atomic_int refs;
+    atomic_int state; /* 0 = pending, 1 = replied, 2 = timed_out */
+    char key[72];
+};
+
+static void
+sb26_xpc_wait_release(struct sb26_xpc_wait *w)
+{
+    if (atomic_fetch_sub_explicit(&w->refs, 1, memory_order_acq_rel) == 1) {
+        if (w->reply) xpc_release(w->reply);
+        if (w->sem) dispatch_release(w->sem);
+        free(w);
+    }
 }
 
 /* ---------------------------------------------------------------------------------------
@@ -1067,62 +1104,68 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
     if (is_icons) {
         char key[72];
         sb26_xpc_cache_key(message, key, sizeof(key));
-        xpc_object_t hit = sb26_xpc_cache_get(key);
-        __block xpc_object_t async_reply = NULL;
-        dispatch_semaphore_t done = NULL;
+        xpc_object_t hit = sb26_xpc_cache_get_retained(key);
 
         if (hit) {
-            reply = xpc_retain(hit);
+            reply = hit;
             fprintf(stderr, "sb26 xpc sync #%u CACHEHIT name=%s key=%.24s\n", n, name, key);
             goto done_icons;
         }
-        done = dispatch_semaphore_create(0);
+
+        struct sb26_xpc_wait *w = (struct sb26_xpc_wait *)calloc(1, sizeof(*w));
+        if (!w || !(w->sem = dispatch_semaphore_create(0))) {
+            if (w) free(w);
+            reply = sb26_xpc_cache_any_retained();
+            if (!reply) reply = xpc_dictionary_create(NULL, NULL, 0);
+            goto done_icons;
+        }
+        atomic_init(&w->refs, 2);
+        atomic_init(&w->state, 0);
+        snprintf(w->key, sizeof(w->key), "%s", key);
+
         xpc_connection_send_message_with_reply(connection, message,
             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
             ^(xpc_object_t rep) {
-                /* v68: an XPC_TYPE_ERROR reply is exactly what the sync API returns
-                 * when the peer dies mid-call. v67 kept only dictionaries, so that
-                 * error became NULL and NSXPCConnection aborted SpringBoard ("root
-                 * object is not an XPC dictionary", 12 times in one boot). Keep every
-                 * non-NULL reply, errors included; the cache still stores dictionaries
-                 * only. The array "key" must stay out of the block (clang rejects
-                 * capturing one). */
-                if (rep) {
-                    async_reply = xpc_retain(rep);
+                if (rep) sb26_xpc_cache_put(w->key, rep);
+                int expected = 0;
+                if (atomic_compare_exchange_strong_explicit(&w->state, &expected, 1,
+                        memory_order_acq_rel, memory_order_acquire)) {
+                    if (rep) w->reply = xpc_retain(rep);
+                    dispatch_semaphore_signal(w->sem);
                 }
-                dispatch_semaphore_signal(done);
+                sb26_xpc_wait_release(w);
             });
+
         {
             double cold_ms = glass_xpc_cold_ms;
             if (cold_ms < 20.0) cold_ms = 20.0;
-            if (cold_ms > 300.0) cold_ms = 300.0;
-        if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW,
-                (int64_t)(cold_ms * (double)NSEC_PER_MSEC))) == 0) {
-            reply = async_reply;
-            if (reply) {
-                sb26_xpc_cache_put(key, reply);
+            if (cold_ms > 500.0) cold_ms = 500.0;
+            int waited = dispatch_semaphore_wait(w->sem, dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)(cold_ms * (double)NSEC_PER_MSEC)));
+            int prev = atomic_exchange_explicit(&w->state, 2, memory_order_acq_rel);
+            if (waited == 0 || prev == 1) {
+                if (waited != 0) {
+                    /* Block transitioned 0->1 right as wait timed out; wait briefly for signal. */
+                    dispatch_semaphore_wait(w->sem, DISPATCH_TIME_FOREVER);
+                }
+                reply = w->reply;
+                w->reply = NULL;
+                if (!reply) {
+                    reply = sb26_xpc_cache_get_retained(key);
+                    if (!reply) reply = sb26_xpc_cache_any_retained();
+                    if (!reply) reply = xpc_dictionary_create(NULL, NULL, 0);
+                    fprintf(stderr, "sb26 xpc sync #%u NULLREPLY name=%s key=%.24s cached=%d\n",
+                        n, name, key, sb26_xpc_cache_n != 0);
+                }
             } else {
-                /* v68 saw the handler itself called with NULL; returning that aborted
-                 * SpringBoard. Fall back to a reply that is known to decode. */
-                reply = sb26_xpc_cache_get(key);
-                if (!reply) reply = sb26_xpc_cache_any();
-                reply = reply ? xpc_retain(reply) : xpc_dictionary_create(NULL, NULL, 0);
-                fprintf(stderr, "sb26 xpc sync #%u NULLREPLY name=%s key=%.24s cached=%d\n",
-                    n, name, key, sb26_xpc_cache_n != 0);
+                reply = sb26_xpc_cache_get_retained(key);
+                if (!reply) reply = sb26_xpc_cache_any_retained();
+                if (!reply) reply = xpc_dictionary_create(NULL, NULL, 0);
+                fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d cold_ms=%.0f\n",
+                    n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY, cold_ms);
             }
-        } else {
-            /* NSXPCConnection requires a dictionary: NULL aborts SpringBoard with
-             * "root object is not an XPC dictionary" (v66). Replay a real reply of
-             * the same icon request when one was ever captured; if this key is cold,
-             * replay the newest captured one (wrong icon beats a dead SpringBoard). */
-            reply = sb26_xpc_cache_get(key);
-            if (!reply) reply = sb26_xpc_cache_any();
-            reply = reply ? xpc_retain(reply) : xpc_dictionary_create(NULL, NULL, 0);
-            fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d cold_ms=%.0f\n",
-                n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY, cold_ms);
         }
-        }
-        if (done) dispatch_release(done);
+        sb26_xpc_wait_release(w);
 done_icons:
         ;
     } else {
@@ -1338,7 +1381,7 @@ sb26_glass_conf(void)
     {
         double shown = glass_xpc_cold_ms;
         if (shown < 20.0) shown = 20.0;
-        if (shown > 300.0) shown = 300.0;
+        if (shown > 500.0) shown = 500.0;
         fprintf(stderr,
             "sb26 glass: conf on=%d icon=%.2f/%.2f dock=%.2f search=%.2f widget=%.2f "
             "cold_conf=%.0f cold_ms=%.0f\n",
