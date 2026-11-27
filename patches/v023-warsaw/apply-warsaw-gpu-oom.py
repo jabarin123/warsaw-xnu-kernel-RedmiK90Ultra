@@ -34,10 +34,9 @@ def main() -> None:
 
     replace_exact(
         gpu_cpp,
-        "\tbool dropKept(struct gpu_kept * k, struct gpu_garbage * garbage = NULL);\n",
-        "\tbool dropKept(struct gpu_kept * k, struct gpu_garbage * garbage = NULL);\n"
-        "\tuint64_t drainKeptStep(struct gpu_garbage * garbage, bool * more);\n",
-        "AnnibaleGPU drainKeptStep decl",
+        "public:\n\tvirtual bool initWithTask(",
+        "public:\n\tuint64_t drainKeptStep(struct gpu_garbage * garbage, bool * more);\n\tvirtual bool initWithTask(",
+        "AnnibaleGPU drainKeptStep public decl",
     )
 
     replace_exact(
