@@ -407,6 +407,7 @@ def build_system_image(root_stage: Path, sys_stage: Path, sys_manifest: Path, ou
     # Mountpoints & empty directories
     for d in (
         "System/Library/LaunchDaemons",
+        "private/var",
         "annibale",
         "redwood",
         "sbin",
@@ -442,6 +443,7 @@ def build_system_image(root_stage: Path, sys_stage: Path, sys_manifest: Path, ou
             del manifest_map[k]
     # Add/override added paths
     extra_entries = {
+        "private/var": "40755\t0\t0\tprivate/var\t",
         "annibale": "40755\t0\t0\tannibale\t",
         "redwood": "40755\t0\t0\tredwood\t",
         "System/Volumes": "40755\t0\t0\tSystem/Volumes\t",
