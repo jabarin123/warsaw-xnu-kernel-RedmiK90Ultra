@@ -1,0 +1,36 @@
+diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
+index 111111111111..222222222222 100644
+--- a/osfmk/vm/vm_kern.c
++++ b/osfmk/vm/vm_kern.c
+@@ -3052,7 +3052,14 @@ kmem_add_extra_claims(struct mach_vm_range km_range)
+ 	 * all pointer allocations. Given that we have 3 total ranges
+ 	 * divide the available VA by 7.
+ 	 */
+-	ptr_range_size = free_size / (kmem_ptr_ranges * 2 + 1);
++	if (kmem_ptr_ranges == 1) {
++		/* warsaw: GPU BOs and MiniIOSurface allocate from KHEAP_DATA_SHARED;
++		 * reserve 1/6 (~1 GiB) for ptr, 1/6 (~1 GiB) for data_private, and
++		 * 4/6 (~4 GiB) for kmem_data_shared_range instead of 2 GiB each. */
++		ptr_range_size = free_size / 6;
++	} else {
++		ptr_range_size = free_size / (kmem_ptr_ranges * 2 + 1);
++	}
+ 	ptr_range_size = round_page(ptr_range_size);
+ 
+ 	/* Less any necessary allocation padding... */
+@@ -3107,8 +3114,13 @@ kmem_add_extra_claims(struct mach_vm_range km_range)
+ 	 * these sizes to page size, and we need to make sure we never
+ 	 * exceed the remaining allocable space we divided.
+ 	 */
+-	shared_data_range_size = data_range_size =
+-	    trunc_page(data_range_size / 2);
++	if (kmem_ptr_ranges == 1) {
++		shared_data_range_size = trunc_page((data_range_size * 4) / 5);
++		data_range_size = trunc_page(data_range_size - shared_data_range_size);
++	} else {
++		shared_data_range_size = data_range_size =
++		    trunc_page(data_range_size / 2);
++	}
+ 
+ 	/* Less any necessary allocation padding... */
+ 	data_range_size = kmem_allocation_to_claim_size(data_range_size);
