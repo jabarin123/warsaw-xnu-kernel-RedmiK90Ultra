@@ -71,17 +71,16 @@ jobs:
                    $(find /tmp/u/tools/mesa/rebase-26 -maxdepth 1 -name '*.patch' | LC_ALL=C sort); do
             name=$(basename "$p")
             printf '=== %s\n' "$p" >> "$PATCHLOG"
-            if gpatch -s --fuzz=0 --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1; then
+            if gpatch -s --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1; then
               echo "ok       $name"
             else
-              echo "RETRY(fuzz) $name:"
-              tail -10 "$PATCHLOG"
-              gpatch -s --batch --no-backup-if-mismatch -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1 || {
-                echo "::error::patch failed: $name"
-                tail -30 "$PATCHLOG"
-                exit 1
-              }
-              echo "ok(fuzz) $name"
+              echo "::error::patch failed: $name"
+              tail -25 "$PATCHLOG"
+              for rf in $(find "mesa-$MESA_VERSION" -name '*.rej'); do
+                echo "--- REJ: $rf ---"
+                cat "$rf"
+              done
+              exit 1
             fi
           done
           REJS=$(find "mesa-$MESA_VERSION" -name '*.rej' | LC_ALL=C sort)
