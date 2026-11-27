@@ -6,7 +6,7 @@ on:
       userland_ref:
         description: 'iola1999/hackios-xnu-userland commit or branch'
         required: false
-        default: '27dc30ad'
+        default: '27dc30ade66b3140a0f48fe40c516b9975143685'
 
 env:
   MESA_VERSION: '26.2.5'
@@ -41,7 +41,7 @@ jobs:
 
       - name: Fetch upstream hackios-xnu-userland
         env:
-          USERLAND_SHA: ${{ inputs.userland_ref || '27dc30ad' }}
+          USERLAND_SHA: ${{ inputs.userland_ref || '27dc30ade66b3140a0f48fe40c516b9975143685' }}
         run: |
           set -euo pipefail
           git init -q /tmp/u
@@ -156,7 +156,7 @@ jobs:
           git config user.email actions@github.com
           git checkout -q -b v023-air-artifacts
           git add -A
-          git commit -qm "libannibaleair: mesa $MESA_VERSION, userland ${{ inputs.userland_ref || '27dc30ad' }}"
+          git commit -qm "libannibaleair: mesa $MESA_VERSION, userland ${{ inputs.userland_ref || '27dc30ade66b3140a0f48fe40c516b9975143685' }}"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git push -q -f origin v023-air-artifacts
           echo "v023-air-artifacts: $(git rev-parse --short HEAD)"
