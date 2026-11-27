@@ -54,7 +54,7 @@ WARSAW_CMDLINE = (
     "cpus=7 bootcpu=7 small_cores_after=0 "
     "adreno8=23 adreno8_pause=0 adreno8_fine=0 adreno8_watch=0 "
     "adreno8_keep=1 adreno8_return=0 adreno8_speed=14 adreno8_secure_preflight=4 "
-    "touchscreen=2 buttons=1 battery=1 gpu_log=0 gpu_coherent=1 metal=1 cpufreq=1 "
+    "touchscreen=2 buttons=1 battery=1 gpu_log=0 gpu_keep=0 gpu_coherent=1 metal=1 cpufreq=1 "
     "fb_threads=4 fb_flip=2 fb_beat=0 fb_hz=120 fb_ca_hz=120 "
     "touch_lat=0 touch_poll_us=4000 dl_max=1 "
     "pcie=10 pcie_power=1 pcie_sleep_clock=board pcie_bdf=bd_p12x.elf pcie_fw=2 "
