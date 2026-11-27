@@ -108,9 +108,9 @@ jobs:
           cat > /tmp/mesa/cross.ini <<INI
           [binaries]
           bison = '$(brew --prefix bison)/bin/bison'
-          c = ['$CLANG', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0']
-          cpp = ['$CLANGXX', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0', '-fuse-cxa-atexit']
-          objc = ['$CLANG', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0']
+          c = ['$CLANG', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0', '-D_DARWIN_C_SOURCE']
+          cpp = ['$CLANGXX', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0', '-D_DARWIN_C_SOURCE', '-fuse-cxa-atexit']
+          objc = ['$CLANG', '-arch', 'arm64e', '-isysroot', '$SDK', '-miphoneos-version-min=26.0', '-D_DARWIN_C_SOURCE']
           ar = '$AR'
           ranlib = '$RANLIB'
           strip = '$STRIP'
