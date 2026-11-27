@@ -50,19 +50,74 @@ WORK_SYS_MANIFEST = USERLAND / "system-v023-warsaw.manifest"
 PAYLOAD_CAP = 0x03700000  # 57,671,680 B (strict BootShim / mkxnuimg cap)
 
 WARSAW_CMDLINE = (
-    "debug=0x10e rootdev=md0 launchd_unsecure_cache=1 panic_on_crash_disabled=1 "
+    "debug=0x8 rootdev=md0 launchd_unsecure_cache=1 panic_on_crash_disabled=1 "
     "cpus=7 bootcpu=7 small_cores_after=0 "
     "adreno8=23 adreno8_pause=0 adreno8_fine=0 adreno8_watch=0 "
     "adreno8_keep=1 adreno8_return=0 adreno8_speed=14 adreno8_secure_preflight=4 "
     "touchscreen=2 buttons=1 battery=1 gpu_log=0 gpu_coherent=1 metal=1 cpufreq=1 "
-    "fb_threads=2 fb_flip=2 fb_beat=0 fb_hz=120 fb_ca_hz=120 "
+    "fb_threads=4 fb_flip=2 fb_beat=0 fb_hz=120 fb_ca_hz=120 "
     "touch_lat=0 touch_poll_us=4000 dl_max=1 "
     "pcie=10 pcie_power=1 pcie_sleep_clock=board pcie_bdf=bd_p12x.elf pcie_fw=2 "
     "pcie_smps_hpm=1 pcie_bt_en=1 pcie_aop_pdc=1 pcie_rddm=1 "
     "wifi=1 wifi_lx=2 wifi_smmu=2 wifi_keep=1 wifi_scan=1 wifi_mlo=1 "
-    "wifi_mac=02:4b:39:30:00:01 wifi_station=1 bt=4 applog=0 autounlock=1 "
+    "wifi_mac=02:4b:39:30:00:01 wifi_station=1 applog=0 autounlock=1 "
     "fbwidth=1280 fbheight=2772 fbpitch=460"
 )
+
+# Lean RAM-boot daemon whitelist: loading all 545 flash-boot daemons alongside a
+# 5.5 GiB RAM-resident system26.apfs exhausts wired kernel memory (IOBufferMemoryDescriptor
+# returns NULL -> AnnibaleGPU no memory freeze). These ~47 Apple daemons + 4 annibale
+# daemons cover SpringBoard, Liquid Glass, PosterBoard, Widgets, Wi-Fi, Safari, Maps,
+# Photos, Files, Keyboard, Audio/Video, and TrollStore while saving ~3 GiB of RAM.
+RAM_BOOT_APPLE_DAEMONS = {
+    "com.apple.PosterBoard.plist",
+    "com.apple.SpringBoard.plist",
+    "com.apple.TextInput.kbd.plist",
+    "com.apple.UserEventAgent-System.plist",
+    "com.apple.appprotectiond.plist",
+    "com.apple.assetsd.plist",
+    "com.apple.audiomxd.plist",
+    "com.apple.backboardd.plist",
+    "com.apple.cfprefsd.xpc.daemon.plist",
+    "com.apple.cfprefsd.xpc.daemon.system.plist",
+    "com.apple.chronod.plist",
+    "com.apple.configd.plist",
+    "com.apple.containermanagerd.plist",
+    "com.apple.containermanagerd.system.plist",
+    "com.apple.diagnosticd.plist",
+    "com.apple.distnoted.xpc.daemon.plist",
+    "com.apple.FileProvider.plist",
+    "com.apple.fontservicesd.plist",
+    "com.apple.fseventsd.plist",
+    "com.apple.geod.plist",
+    "com.apple.iconservices.iconservicesagent.plist",
+    "com.apple.locationd.plist",
+    "com.apple.logd.plist",
+    "com.apple.logd_helper.plist",
+    "com.apple.lsd.plist",
+    "com.apple.mDNSResponder.plist",
+    "com.apple.mDNSResponderHelper.plist",
+    "com.apple.mobile.installd.plist",
+    "com.apple.mobile.usermanagerd.plist",
+    "com.apple.mobileactivationd.plist",
+    "com.apple.mobilegestalt.xpc.plist",
+    "com.apple.notifyd.plist",
+    "com.apple.nsurlsessiond.plist",
+    "com.apple.pasteboard.pasted.plist",
+    "com.apple.pluginkit.pkd.plist",
+    "com.apple.powerd.plist",
+    "com.apple.runningboardd.plist",
+    "com.apple.securityd.plist",
+    "com.apple.sleepd.plist",
+    "com.apple.splashboardd.plist",
+    "com.apple.syslogd.plist",
+    "com.apple.systemstatusd.plist",
+    "com.apple.tccd.plist",
+    "com.apple.timed.plist",
+    "com.apple.trustd.plist",
+    "com.apple.videocodecd.plist",
+    "com.apple.wifid.plist",
+}
 
 MACHO_MAGICS = {
     b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
@@ -208,6 +263,10 @@ def build_root_image(stage_dir: Path, manifest_path: Path, out_apfs: Path):
             dst.write_bytes(data)
             continue
         elif rel.startswith("LaunchDaemons/"):
+            fname = Path(rel).name
+            if fname not in RAM_BOOT_APPLE_DAEMONS:
+                skipped_daemons.append((rel, "trimmed-for-ram-boot"))
+                continue
             src_bytes = read_ios_file(r["from"])
             pl = localfiles.apply_edits(plistlib.loads(src_bytes), r["edits"])
             prog = pl.get("Program") or (pl.get("ProgramArguments") or [None])[0]
@@ -217,7 +276,7 @@ def build_root_image(stage_dir: Path, manifest_path: Path, out_apfs: Path):
             data = localfiles.dump_plist(pl)
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(data)
-            jobs_bytes[Path(rel).name] = data
+            jobs_bytes[fname] = data
             kept_daemons += 1
         elif kind == "copy":
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +327,9 @@ def build_root_image(stage_dir: Path, manifest_path: Path, out_apfs: Path):
         shutil.copyfile(wifi_dir / "bd_p12x.elf", fw_dst / "bdwlan.elf")
         fw_copied.append("bdwlan.elf")
     print(f"  staged warsaw fw/: {', '.join(fw_copied)}", flush=True)
+
+    # Silence launchd's own verbose stderr spam on RAM boot
+    (stage_dir / "etc/quiet").write_bytes(b"")
 
     # 5. Normalize all text config files to LF-only and verify zero CR bytes
     for rel in ("etc/rc", "etc/rc.jobs", "etc/inject.conf", "etc/var.skel", "etc/weights.list", "etc/motd"):
@@ -555,8 +617,10 @@ def build_payload(root_apfs: Path, out_payload: Path):
 
 
 def main():
+    root_only = "--root-only" in sys.argv[1:]
     build_root_image(WORK_ROOT, WORK_ROOT_MANIFEST, OUT_ROOT_APFS)
-    build_system_image(WORK_ROOT, WORK_SYS, WORK_SYS_MANIFEST, OUT_SYS_APFS)
+    if not root_only:
+        build_system_image(WORK_ROOT, WORK_SYS, WORK_SYS_MANIFEST, OUT_SYS_APFS)
     build_payload(OUT_ROOT_APFS, OUT_PAYLOAD)
     print("\nDONE! Ready for fastboot boot (RAM-only, zero flash).")
 
