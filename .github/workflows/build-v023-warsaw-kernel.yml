@@ -138,7 +138,7 @@ jobs:
           [ -n "$K" ] || { echo "::error::missing mach.development.bcm2837"; exit 1; }
           ls -la "$K"
           shasum -a 256 "$K"
-          strings -a "$K" | grep -m2 'reclaimed %llu MB from kept pools'
+          strings -a "$K" | grep 'reclaimed %llu MB from kept pools'
           echo "ath12k strings: $(strings -a "$K" | grep -c 'ath12k' || true)"
 
       - uses: actions/upload-artifact@v4
